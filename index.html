@@ -509,61 +509,145 @@
                 }
             };
 
-            const exportMindMapPDF = () => {
+            const exportMindMapPDF = async () => {
                 const element = document.getElementById('mindmap-export-container');
                 const graphContainer = document.getElementById('network-container');
-                const canvas = graphContainer.querySelector('canvas');
-                
-                if (!canvas) {
-                    showModal('แจ้งเตือน', "ไม่พบข้อมูลกราฟ กรุณาเพิ่มข้อมูลก่อนส่งออก");
+
+                if (!element || !graphContainer) {
+                    showModal('แจ้งเตือน', 'ไม่พบพื้นที่ Mind Map สำหรับส่งออก');
+                    return;
+                }
+
+                // ตรวจสอบว่ามีข้อมูลจริงก่อนส่งออก
+                const filledCount = Object.values(formData || {})
+                    .flat()
+                    .filter(v => v !== null && v !== undefined && String(v).trim() !== '').length;
+
+                if (filledCount === 0) {
+                    showModal('แจ้งเตือน', 'ยังไม่มีข้อมูลใน Mind Map กรุณากรอกข้อมูลใน Checklist ก่อนส่งออก');
                     return;
                 }
 
                 try {
+                    // ให้ vis-network จัดตำแหน่ง Node ทั้งหมดให้อยู่ในกรอบก่อนจับภาพ
+                    if (window.currentMindMapNetwork) {
+                        try {
+                            window.currentMindMapNetwork.fit({
+                                animation: false
+                            });
+                            window.currentMindMapNetwork.redraw();
+                        } catch (e) {
+                            console.warn('Network fit error:', e);
+                        }
+                    }
+
+                    // รอให้ Canvas วาดข้อมูลล่าสุดเสร็จ
+                    await new Promise(resolve => setTimeout(resolve, 700));
+
+                    const canvas = graphContainer.querySelector('canvas');
+                    if (!canvas) {
+                        showModal('แจ้งเตือน', 'ไม่พบข้อมูลกราฟ กรุณาเปิดหน้า Mind Map อีกครั้ง');
+                        return;
+                    }
+
+                    // สร้าง Canvas ใหม่เพื่อบังคับพื้นหลังสีขาว
+                    // และคงข้อความ/Node ที่ vis-network วาดไว้ทั้งหมด
+                    const exportScale = 2;
                     const tempCanvas = document.createElement('canvas');
-                    tempCanvas.width = canvas.width;
-                    tempCanvas.height = canvas.height;
+                    tempCanvas.width = canvas.width * exportScale;
+                    tempCanvas.height = canvas.height * exportScale;
+
                     const ctx = tempCanvas.getContext('2d');
                     ctx.fillStyle = '#ffffff';
                     ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
-                    ctx.drawImage(canvas, 0, 0);
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.drawImage(
+                        canvas,
+                        0, 0, canvas.width, canvas.height,
+                        0, 0, tempCanvas.width, tempCanvas.height
+                    );
 
-                    const imgData = tempCanvas.toDataURL('image/jpeg', 1.0);
+                    const imgData = tempCanvas.toDataURL('image/jpeg', 0.98);
+
+                    // สร้างพื้นที่สำหรับ PDF โดยไม่ใช้ Canvas ของ vis-network โดยตรง
+                    const pdfWrapper = document.createElement('div');
+                    pdfWrapper.id = 'mindmap-pdf-temp-wrapper';
+                    pdfWrapper.style.background = '#ffffff';
+                    pdfWrapper.style.width = '100%';
+                    pdfWrapper.style.padding = '12px';
+                    pdfWrapper.style.boxSizing = 'border-box';
+                    pdfWrapper.style.fontFamily = 'Sarabun, sans-serif';
+
+                    const title = document.createElement('div');
+                    title.style.textAlign = 'center';
+                    title.style.marginBottom = '10px';
+
+                    const h = document.createElement('h2');
+                    h.textContent = `ผังความเชื่อมโยง (Mind Map) - ${targetName || 'ไม่ระบุเป้าหมาย'}`;
+                    h.style.margin = '0 0 6px 0';
+                    h.style.fontSize = '22px';
+                    h.style.fontWeight = '700';
+                    h.style.color = '#111827';
+
+                    const info = document.createElement('div');
+                    info.textContent = `เลขคดี: ${caseNumber || '-'}  |  ผู้รับผิดชอบ: ${officerName || '-'}  |  จำนวนข้อมูล: ${filledCount} รายการ`;
+                    info.style.fontSize = '13px';
+                    info.style.color = '#4b5563';
+
+                    title.appendChild(h);
+                    title.appendChild(info);
+
                     const img = document.createElement('img');
                     img.src = imgData;
-                    img.id = 'temp-graph-img';
+                    img.style.display = 'block';
                     img.style.width = '100%';
-                    img.style.border = '1px solid #e5e7eb';
-                    img.style.borderRadius = '0.5rem';
-                    
-                    graphContainer.style.display = 'none';
-                    graphContainer.parentNode.insertBefore(img, graphContainer);
+                    img.style.height = 'auto';
+                    img.style.border = '1px solid #d1d5db';
+                    img.style.boxSizing = 'border-box';
+
+                    pdfWrapper.appendChild(title);
+                    pdfWrapper.appendChild(img);
+
+                    document.body.appendChild(pdfWrapper);
+
+                    const safeName = (targetName || 'Target')
+                        .replace(/[\\/:*?"<>|]/g, '_')
+                        .trim();
 
                     const opt = {
-                        margin: 10,
-                        filename: `MindMap_${targetName || 'Target'}.pdf`,
+                        margin: 6,
+                        filename: `MindMap_${safeName || 'Target'}.pdf`,
                         image: { type: 'jpeg', quality: 0.98 },
-                        html2canvas: { scale: 2, useCORS: true },
-                        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
+                        html2canvas: {
+                            scale: 2,
+                            useCORS: true,
+                            backgroundColor: '#ffffff',
+                            logging: false
+                        },
+                        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+                        jsPDF: {
+                            unit: 'mm',
+                            format: 'a4',
+                            orientation: 'landscape',
+                            compress: true
+                        }
                     };
 
-                    setTimeout(() => {
-                        try {
-                            html2pdf().set(opt).from(element).save().then(() => {
-                                const tempImg = document.getElementById('temp-graph-img');
-                                if (tempImg) tempImg.remove();
-                                graphContainer.style.display = 'block';
-                            });
-                        } catch (e) {
-                            const tempImg = document.getElementById('temp-graph-img');
-                            if (tempImg) tempImg.remove();
-                            graphContainer.style.display = 'block';
-                            console.error(e);
-                        }
-                    }, 800);
+                    await html2pdf().set(opt).from(pdfWrapper).save();
+
+                    pdfWrapper.remove();
+
+                    showModal(
+                        'ส่งออก PDF สำเร็จ',
+                        `สร้างไฟล์ Mind Map ของ "${targetName || 'ไม่ระบุเป้าหมาย'}" เรียบร้อยแล้ว\\nข้อมูลที่นำไปแสดงใน Node: ${filledCount} รายการ`
+                    );
+
                 } catch (err) {
-                    showModal('ข้อผิดพลาด', 'เกิดข้อผิดพลาดในการสร้างภาพ PDF');
-                    console.error(err);
+                    const temp = document.getElementById('mindmap-pdf-temp-wrapper');
+                    if (temp) temp.remove();
+
+                    console.error('Mind Map PDF export error:', err);
+                    showModal('ข้อผิดพลาด', 'ไม่สามารถสร้างไฟล์ PDF ได้: ' + (err.message || err));
                 }
             };
 
@@ -617,7 +701,7 @@
 
                     const data = { nodes: new vis.DataSet(nodesArray), edges: new vis.DataSet(edgesArray) };
                     const options = { layout: { improvedLayout: true }, physics: { stabilization: false, barnesHut: { springLength: 150 } } };
-                    new vis.Network(container, data, options);
+                    window.currentMindMapNetwork = new vis.Network(container, data, options);
                 }
             }, [activeTab, formData, categories, targetName]);
 
